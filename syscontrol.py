@@ -18,25 +18,80 @@ mpDraw = mp.solutions.drawing_utils
 mpHands = mp.solutions.hands
 hands = mpHands.Hands(False, 2, 1, 0.75, 0.5)
 
-cap = cv2.VideoCapture(0)  # Getting video from webcam
+# webcam inicialization
+cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FPS, 30.0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 prevTime = 0
 currTime = 0
 
+# Getting screen properties
 screenw, screenh = list(pyautogui.size())[0], list(pyautogui.size())[1]
 reduction = 100
 smoothing = 5
 prev_x, prev_y = 0, 0
 curr_x, curr_y = 0, 0
 
+# Setting audio controls
 devices = AudioUtilities.GetSpeakers()
 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
 volume = interface.QueryInterface(IAudioEndpointVolume)
 minVol, maxVol, _ = volume.GetVolumeRange()
 
 tips = [4, 8, 12, 16, 20]
+
+def getLandmarks(results):
+    """Converts the landmarks provided by mediapipe to a list with the pixel coordinates of each landmark
+    
+    Args:
+        results (list): List with landmarks especificaton of the hand, provided by mediapipe
+    
+    Returns:
+        list: List with the pixel coordinates of each landmark
+    """
+    
+    if results.multi_hand_landmarks:
+        # Getting hand landmarks in a list
+        landmarks = []
+        for hand in results.multi_hand_landmarks:
+            mpDraw.draw_landmarks(frame, hand, mpHands.HAND_CONNECTIONS)
+            
+            for landmarkid, lm in enumerate(hand.landmark):
+                # The x and y coordinates are normalized, so we need to multiply them by the width and height of the frame to get the pixel values
+                pixelx, pixely = int(lm.x * width), int(lm.y * height)
+                
+                landmarks.append([landmarkid, pixelx, pixely])
+    
+    return landmarks
+    
+def getFingers(landmarks):
+    """Creates a list with the state of each finger (0 = closed, 1 = open)
+    
+    Args:
+        landmarks (list): List with the pixel coordinates of the landmarks of the hand, provided by mediapipe
+        
+    Returns:
+        list: List with the state of each finger (0 = closed, 1 = open) 
+    """
+    
+    global tips 
+    
+    fingers = []  # 0 = closed, 1 = open
+    if landmarks[tips[0]][1] < landmarks[tips[0] - 1][1]:  # Thumb
+        fingers.append(1)
+    else:
+        fingers.append(0)
+        
+    for tip in tips[1:]:
+        # Getting if each finger is up or down (except the thumb)
+        if landmarks[tip][2] < landmarks[tip - 1][2]:
+            fingers.append(1)
+        else:
+            fingers.append(0)
+            
+    return fingers
+
 
 while True:
     ret, frame = cap.read()
@@ -48,31 +103,8 @@ while True:
         
         results = hands.process(frameRGB)
         if results.multi_hand_landmarks:
-            # Drawing hand landmarks
-            landmarks = []
-            for hand in results.multi_hand_landmarks:
-                mpDraw.draw_landmarks(frame, hand, mpHands.HAND_CONNECTIONS)
-                
-                for landmarkid, lm in enumerate(hand.landmark):
-                    # The x and y coordinates are normalized, so we need to multiply them by the width and height of the frame to get the pixel values
-                    pixelx, pixely = int(lm.x * width), int(lm.y * height)
-                    
-                    landmarks.append([landmarkid, pixelx, pixely])       
-            # print(landmarks)
-            
-            fingers = []  # 0 = closed, 1 = open
-            if landmarks[tips[0]][1] < landmarks[tips[0] - 1][1]:  # Thumb
-                fingers.append(1)
-            else:
-                fingers.append(0)
-                
-            for tip in tips[1:]:
-                # Getting if each finger is up or down (except the thumb)
-                if landmarks[tip][2] < landmarks[tip - 1][2]:
-                    fingers.append(1)
-                else:
-                    fingers.append(0)
-            # print(fingers)
+            landmarks = getLandmarks(results)
+            fingers = getFingers(landmarks)
             
             # Mode: Mouse control
             if fingers[1] == 1 and fingers[2] == 0 and fingers[0] == 0:
@@ -104,7 +136,7 @@ while True:
                 cv2.circle(frame, (x1, y1), 15, (255, 0, 255), cv2.FILLED)
                 cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
                 
-                print(length)
+                #print(length)
                 if length < 25:
                     cv2.circle(frame, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
                     pyautogui.click(interval=0.25)
