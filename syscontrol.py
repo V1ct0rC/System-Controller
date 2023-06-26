@@ -39,13 +39,17 @@ interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
 volume = interface.QueryInterface(IAudioEndpointVolume)
 minVol, maxVol, _ = volume.GetVolumeRange()
 
+# Tip of each finger according to mediapipe landmarks
 tips = [4, 8, 12, 16, 20]
 
-def getLandmarks(results):
+def getLandmarks(results, height, width, frame):
     """Converts the landmarks provided by mediapipe to a list with the pixel coordinates of each landmark
     
     Args:
         results (list): List with landmarks especificaton of the hand, provided by mediapipe
+        height (int): Height of the frame, used to convert  to pixel coordinates
+        width (int): Width of the frame, used to convert  to pixel coordinates
+        frame (numpy.ndarray): Frame captured by the webcam
     
     Returns:
         list: List with the pixel coordinates of each landmark
@@ -92,6 +96,78 @@ def getFingers(landmarks):
             
     return fingers
 
+def controlModes(landmarks, fingers, frame, height, width):
+    """Check the state of the fingers (index, muddle and thumb) and control the system according to the state
+
+    Args:
+        landmarks (list): List with the pixel coordinates of the landmarks of the hand, provided by mediapipe
+        fingers (list): List with the state of each finger (0 = closed, 1 = open)
+        frame (numpy.ndarray): Frame captured by the webcam
+        height (int): Height of the frame, used to convert  to pixel coordinates
+        width (int): Width of the frame, used to convert  to pixel coordinates
+    
+    Returns:
+        None
+    """
+    global tips, prev_x, prev_y, curr_x, curr_y
+    
+    # Mode: Mouse control
+    if fingers[1] == 1 and fingers[2] == 0 and fingers[0] == 0:  # Only ndex finger up
+        cv2.rectangle(frame, (reduction, reduction), (width - reduction, height - reduction), (255, 0, 255), 2)
+        
+        x1, y1 = landmarks[tips[1]][1:]  # Index finger
+        
+        # Convert coordinates (cam resolution to screen resolution)
+        x_scaled = np.interp(x1, (reduction, 640 - reduction), (0, screenw))
+        y_scaled = np.interp(y1, (reduction, 480 - reduction), (0, screenh))
+        
+        # Smoothen moviment
+        curr_x = prev_x + (x_scaled - prev_x) / smoothing
+        curr_y = prev_y + (y_scaled - prev_y) / smoothing
+        prev_x, prev_y = curr_x, curr_y
+        
+        pyautogui.moveTo(curr_x, curr_y)
+        cv2.circle(frame, (x1, y1), 15, (255, 0, 255), cv2.FILLED)
+        
+    # Mode: Left / Right click
+    if fingers[1] == 1 and fingers[2] == 1 and fingers[0] == 0:  # Index and middle fingers up
+        cv2.rectangle(frame, (reduction, reduction), (width - reduction, height - reduction), (255, 0, 255), 2)
+        
+        x1, y1 = landmarks[tips[1]][1:]  # Index finger
+        x2, y2 = landmarks[tips[2]][1:]  # Middle finger
+    
+        length = math.hypot(x2 - x1, y2 - y1)  # Distance between fingers
+        
+        cv2.circle(frame, (x1, y1), 15, (255, 0, 255), cv2.FILLED)
+        cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+        
+        #print(length)
+        if length < 25:
+            cv2.circle(frame, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
+            pyautogui.click(interval=0.25)
+            
+        if length > 70:
+            cv2.circle(frame, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
+            pyautogui.rightClick(interval=0.25)
+        
+    # Mode: Volume control
+    if fingers[1] == 1 and fingers[0] == 1 and fingers[2] == 0:  # Index and thumb fingers up
+        x1, y1 = landmarks[tips[1]][1:]  # Index finger
+        x2, y2 = landmarks[tips[0]][1:]  # Thumb
+        center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
+    
+        length = math.hypot(x2 - x1, y2 - y1)  # Distance between fingers (20 <-> 150)
+        
+        cv2.circle(frame, (x1, y1), 15, (255, 0, 255), cv2.FILLED)
+        cv2.circle(frame, (x2, y2), 15, (255, 0, 255), cv2.FILLED)
+        cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+        
+        vol = np.interp(length, [20, 150], [minVol, maxVol])
+        volume.SetMasterVolumeLevel(vol, None)
+        
+        percent = np.interp(length, [20, 150], [0, 100])
+        cv2.putText(frame, f'{int(percent)} %', (center_x, center_y), cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 255), 2)
+
 
 while True:
     ret, frame = cap.read()
@@ -103,65 +179,10 @@ while True:
         
         results = hands.process(frameRGB)
         if results.multi_hand_landmarks:
-            landmarks = getLandmarks(results)
+            landmarks = getLandmarks(results, height, width, frame)
             fingers = getFingers(landmarks)
             
-            # Mode: Mouse control
-            if fingers[1] == 1 and fingers[2] == 0 and fingers[0] == 0:
-                cv2.rectangle(frame, (reduction, reduction), (width - reduction, height - reduction), (255, 0, 255), 2)
-                
-                x1, y1 = landmarks[tips[1]][1:]  # Index finger
-                
-                # Convert coordinates (cam resolution to screen resolution)
-                x_scaled = np.interp(x1, (reduction, 640 - reduction), (0, screenw))
-                y_scaled = np.interp(y1, (reduction, 480 - reduction), (0, screenh))
-                
-                # Smoothen moviment
-                curr_x = prev_x + (x_scaled - prev_x) / smoothing
-                curr_y = prev_y + (y_scaled - prev_y) / smoothing
-                prev_x, prev_y = curr_x, curr_y
-                
-                pyautogui.moveTo(curr_x, curr_y)
-                cv2.circle(frame, (x1, y1), 15, (255, 0, 255), cv2.FILLED)
-                
-            # Mode: Left / Right click
-            if fingers[1] == 1 and fingers[2] == 1 and fingers[0] == 0:
-                cv2.rectangle(frame, (reduction, reduction), (width - reduction, height - reduction), (255, 0, 255), 2)
-                
-                x1, y1 = landmarks[tips[1]][1:]  # Index finger
-                x2, y2 = landmarks[tips[2]][1:]  # Middle finger
-            
-                length = math.hypot(x2 - x1, y2 - y1)  # Distance between fingers
-                
-                cv2.circle(frame, (x1, y1), 15, (255, 0, 255), cv2.FILLED)
-                cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
-                
-                #print(length)
-                if length < 25:
-                    cv2.circle(frame, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
-                    pyautogui.click(interval=0.25)
-                    
-                if length > 70:
-                    cv2.circle(frame, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
-                    pyautogui.rightClick(interval=0.25)
-                
-            # Mode: Volume control
-            if fingers[1] == 1 and fingers[0] == 1 and fingers[2] == 0:
-                x1, y1 = landmarks[tips[1]][1:]  # Index finger
-                x2, y2 = landmarks[tips[0]][1:]  # Thumb
-                center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
-            
-                length = math.hypot(x2 - x1, y2 - y1)  # Distance between fingers (20 <-> 150)
-                
-                cv2.circle(frame, (x1, y1), 15, (255, 0, 255), cv2.FILLED)
-                cv2.circle(frame, (x2, y2), 15, (255, 0, 255), cv2.FILLED)
-                cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
-                
-                vol = np.interp(length, [20, 150], [minVol, maxVol])
-                volume.SetMasterVolumeLevel(vol, None)
-                
-                percent = np.interp(length, [20, 150], [0, 100])
-                cv2.putText(frame, f'{int(percent)} %', (center_x, center_y), cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 255), 2)
+            controlModes(landmarks, fingers, frame, height, width)
         
         # FPS calculation
         currTime = time.time()
